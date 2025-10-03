@@ -5,6 +5,8 @@
 -Supports Sticker making 512 x 512
 -Supports Static image conversion now
 
+# About the app
+
 This Python application converts GIF files into WebM format for compact, transparent animations, optimized for small file sizes. The output is configured for 100x100 pixel resolution, a maximum file size of 63 KB, and a maximum duration of 2.95 seconds, using VP9 encoding with alpha channel support for transparency.
 Features
 
