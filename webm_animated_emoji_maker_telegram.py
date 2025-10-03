@@ -3,23 +3,26 @@ from tkinter import filedialog, messagebox, ttk
 from PIL import Image, ImageSequence
 import subprocess
 import os
-import numpy as np
 import tempfile
 import shutil
 
 # Configuration
-MAX_SIZE_KB = 63
-MAX_DURATION = 2.95  # seconds
-TARGET_SIZE = (100, 100)
+MAX_SIZE_KB_STICKER = 256
+MAX_SIZE_KB_EMOJI = 64
+MAX_DURATION_ANIMATED = 2.95  # seconds for animated GIFs
+MAX_DURATION_STATIC = 2.0  # seconds for static images
+STICKER_SIZE = 512  # One side must be 512 pixels
+EMOJI_SIZE = (100, 100)  # Exactly 100x100 pixels
+DEFAULT_FPS = 30  # Default frame rate for static images
 
-class WebMConverterApp:
+class WebMStickerEmojiApp:
     def __init__(self, root):
         self.root = root
-        self.root.title("WebM Animation Converter")
-        self.root.geometry("500x350")
+        self.root.title("Telegram Sticker & Emoji WebM Converter")
+        self.root.geometry("500x400")
         self.root.configure(bg="#2c2f33")  # Dark theme background
 
-        # Style configuration for modern look
+        # Style configuration
         style = ttk.Style()
         style.configure("TButton", font=("Arial", 10), padding=10)
         style.map("TButton", background=[("active", "#45a049")])
@@ -31,11 +34,11 @@ class WebMConverterApp:
         main_frame.pack(padx=20, pady=20, fill="both", expand=True)
 
         # Title
-        tk.Label(main_frame, text="GIF to WebM Converter", font=("Arial", 16, "bold"), bg="#2c2f33", fg="#ffffff").pack(pady=10)
-        tk.Label(main_frame, text="Create compact, transparent WebM animations", font=("Arial", 10), bg="#2c2f33", fg="#bbbbbb").pack(pady=5)
+        tk.Label(main_frame, text="Telegram Sticker & Emoji Converter", font=("Arial", 16, "bold"), bg="#2c2f33", fg="#ffffff").pack(pady=10)
+        tk.Label(main_frame, text="Create WebM stickers (512px side, ≤256KB) or emoji (100x100px, ≤64KB)", font=("Arial", 10), bg="#2c2f33", fg="#bbbbbb").pack(pady=5)
 
         # Input file
-        tk.Label(main_frame, text="Select Input GIF:", bg="#2c2f33", fg="#ffffff").pack(pady=5)
+        tk.Label(main_frame, text="Select Input Image (GIF, PNG, JPEG):", bg="#2c2f33", fg="#ffffff").pack(pady=5)
         self.input_entry = ttk.Entry(main_frame, width=50)
         self.input_entry.pack(pady=5)
         ttk.Button(main_frame, text="Browse", command=self.browse_input).pack(pady=5)
@@ -46,15 +49,16 @@ class WebMConverterApp:
         self.webm_entry.pack(pady=5)
         ttk.Button(main_frame, text="Browse", command=self.browse_webm).pack(pady=5)
 
-        # Convert button
-        ttk.Button(main_frame, text="Convert", command=self.convert, style="TButton").pack(pady=20)
+        # Convert buttons
+        ttk.Button(main_frame, text="Make Sticker (512px side)", command=lambda: self.convert(is_sticker=True), style="TButton").pack(pady=10)
+        ttk.Button(main_frame, text="Make Emoji (100x100px)", command=lambda: self.convert(is_sticker=False), style="TButton").pack(pady=10)
 
         # Status label
         self.status_label = tk.Label(main_frame, text="", font=("Arial", 10), bg="#2c2f33", fg="#bbbbbb")
         self.status_label.pack(pady=5)
 
     def browse_input(self):
-        file = filedialog.askopenfilename(filetypes=[("GIF files", "*.gif")])
+        file = filedialog.askopenfilename(filetypes=[("Image files", "*.gif;*.png;*.jpg;*.jpeg")])
         if file:
             self.input_entry.delete(0, tk.END)
             self.input_entry.insert(0, file)
@@ -67,59 +71,84 @@ class WebMConverterApp:
             self.webm_entry.insert(0, file)
             self.status_label.config(text="Output path selected")
 
-    def get_duration(self, gif_path):
-        """Calculate duration of GIF in seconds."""
+    def is_animated_gif(self, image_path):
+        """Check if the input is an animated GIF."""
         try:
-            with Image.open(gif_path) as im:
-                durations = [frame.info.get('duration', 100) / 1000 for frame in ImageSequence.Iterator(im)]
-            return sum(durations), durations
-        except Exception as e:
-            messagebox.showerror("Error", f"Failed to read GIF: {e}")
-            return 0, []
+            with Image.open(image_path) as im:
+                return im.is_animated if hasattr(im, "is_animated") else False
+        except Exception:
+            return False
 
-    def crop_transparency(self, frame):
-        """Crop a single frame to remove transparent borders."""
-        frame = frame.convert("RGBA")
-        data = np.array(frame)
-        non_transparent = data[:, :, 3] > 0
-        if non_transparent.any():
-            rows = np.any(non_transparent, axis=1)
-            cols = np.any(non_transparent, axis=0)
-            row_min, row_max = np.where(rows)[0][[0, -1]]
-            col_min, col_max = np.where(cols)[0][[0, -1]]
-            return frame.crop((col_min, row_min, col_max + 1, row_max + 1))
-        return frame
+    def get_duration(self, image_path, is_animated):
+        """Calculate duration and frame durations for input image."""
+        if is_animated:
+            try:
+                with Image.open(image_path) as im:
+                    durations = [frame.info.get('duration', 100) / 1000 for frame in ImageSequence.Iterator(im)]
+                total_duration = sum(durations)
+                if total_duration > MAX_DURATION_ANIMATED:
+                    # Speed up by scaling frame durations
+                    speed_factor = total_duration / MAX_DURATION_ANIMATED
+                    durations = [d / speed_factor for d in durations]
+                    total_duration = MAX_DURATION_ANIMATED
+                return total_duration, durations
+            except Exception as e:
+                messagebox.showerror("Error", f"Failed to read GIF: {e}")
+                return 0, []
+        else:
+            # For static images, calculate frame count to fill MAX_DURATION_STATIC
+            frame_count = int(MAX_DURATION_STATIC * DEFAULT_FPS)
+            frame_duration = MAX_DURATION_STATIC / frame_count
+            return MAX_DURATION_STATIC, [frame_duration] * frame_count
 
-    def resize_frame(self, frame, size):
-        """Resize a single frame to fit within target size."""
-        frame.thumbnail(size, Image.Resampling.LANCZOS)
-        new_frame = Image.new("RGBA", size, (0, 0, 0, 0))
-        offset = ((size[0] - frame.size[0]) // 2, (size[1] - frame.size[1]) // 2)
+    def resize_frame(self, frame, is_sticker=True):
+        """Resize a single frame to Telegram sticker or emoji dimensions."""
+        if frame.mode != "RGBA":
+            frame = frame.convert("RGBA")
+        
+        if is_sticker:
+            # Sticker: One side must be 512, other ≤ 512
+            width, height = frame.size
+            aspect_ratio = width / height
+            if width >= height:
+                target_width = STICKER_SIZE
+                target_height = min(int(STICKER_SIZE / aspect_ratio), STICKER_SIZE)
+            else:
+                target_height = STICKER_SIZE
+                target_width = min(int(STICKER_SIZE * aspect_ratio), STICKER_SIZE)
+            target_size = (target_width, target_height)
+        else:
+            # Emoji: Exactly 100x100
+            target_size = EMOJI_SIZE
+
+        frame.thumbnail(target_size, Image.Resampling.LANCZOS)
+        new_frame = Image.new("RGBA", target_size, (0, 0, 0, 0))
+        offset = ((target_size[0] - frame.size[0]) // 2, (target_size[1] - frame.size[1]) // 2)
         new_frame.paste(frame, offset)
         return new_frame
 
-    def create_webm(self, input_path, output_path, duration, frame_count):
-        """Convert GIF to VP9 WebM with FFmpeg."""
+    def create_webm(self, input_pattern, output_path, duration, frame_count, is_animated, is_sticker):
+        """Convert image sequence to VP9 WebM with FFmpeg."""
         try:
-            # Adjust duration if necessary
-            total_duration = duration
-            fps = frame_count / min(total_duration, MAX_DURATION)
-            if total_duration > MAX_DURATION:
-                setpts = f"setpts={total_duration/MAX_DURATION}*PTS"
-            else:
-                setpts = "setpts=PTS"
+            max_duration = MAX_DURATION_ANIMATED if is_animated else MAX_DURATION_STATIC
+            max_size_kb = MAX_SIZE_KB_STICKER if is_sticker else MAX_SIZE_KB_EMOJI
+            scale = "512:512" if is_sticker else "100:100"
+            total_duration = min(duration, max_duration)
+            fps = frame_count / total_duration
+            speed_factor = duration / max_duration if duration > max_duration else 1.0
+            setpts = f"setpts={1/speed_factor}*PTS"
+            loop_filter = ",loop=-1" if is_animated else ""  # Loop animated GIFs
 
-            # FFmpeg command for VP9 WebM with transparency
-            crf = 30  # Start with lower CRF for better quality
-            max_attempts = 3
+            crf = 30
+            max_attempts = 5
             for attempt in range(max_attempts):
                 cmd = [
                     "ffmpeg",
-                    "-i", input_path,
+                    "-i", input_pattern,
                     "-c:v", "libvpx-vp9",
                     "-b:v", "0",
                     "-crf", str(crf),
-                    "-vf", f"{setpts},fps={fps},scale=100:100:force_original_aspect_ratio=decrease,pad=100:100:(ow-iw)/2:(oh-ih)/2:color=black@0",
+                    "-vf", f"{setpts},fps={fps},scale={scale}:force_original_aspect_ratio=decrease,pad={scale}:(ow-iw)/2:(oh-ih)/2:color=black@0{loop_filter}",
                     "-an",  # No audio
                     "-y",  # Overwrite output
                     output_path
@@ -127,11 +156,11 @@ class WebMConverterApp:
                 self.status_label.config(text=f"Converting with CRF={crf}...")
                 self.root.update()
                 subprocess.run(cmd, check=True, capture_output=True)
-                if os.path.getsize(output_path) / 1024 <= MAX_SIZE_KB:
+                if os.path.getsize(output_path) / 1024 <= max_size_kb:
                     break
-                crf += 5  # Increase CRF to reduce size
+                crf += 5
                 if attempt == max_attempts - 1:
-                    messagebox.showwarning("Warning", "WebM exceeds 63 KB. Using highest compression.")
+                    messagebox.showwarning("Warning", f"WebM exceeds {max_size_kb} KB. Using highest compression.")
             self.status_label.config(text="Conversion complete!")
         except subprocess.CalledProcessError as e:
             self.status_label.config(text="Conversion failed")
@@ -140,7 +169,7 @@ class WebMConverterApp:
             self.status_label.config(text="Conversion failed")
             messagebox.showerror("Error", f"Failed to create WebM: {e}")
 
-    def convert(self):
+    def convert(self, is_sticker=True):
         """Handle conversion process."""
         input_path = self.input_entry.get()
         webm_path = self.webm_entry.get()
@@ -158,18 +187,24 @@ class WebMConverterApp:
         # Create temporary directory for PNG sequence
         temp_dir = tempfile.mkdtemp()
         try:
-            # Process GIF frames
+            # Check if input is an animated GIF
+            is_animated = self.is_animated_gif(input_path)
             self.status_label.config(text="Processing frames...")
             self.root.update()
-            with Image.open(input_path) as im:
-                frames = [frame.copy() for frame in ImageSequence.Iterator(im)]
-                frame_durations = [frame.info.get('duration', 100) / 1000 for frame in frames]
 
-            # Crop and resize frames
+            # Process input image
+            with Image.open(input_path) as im:
+                if is_animated:
+                    frames = [frame.copy() for frame in ImageSequence.Iterator(im)]
+                else:
+                    # For static images, duplicate frame to fill MAX_DURATION_STATIC
+                    frame_count = int(MAX_DURATION_STATIC * DEFAULT_FPS)
+                    frames = [im.copy() for _ in range(frame_count)]
+
+            # Resize frames (no cropping)
             processed_frames = []
             for frame in frames:
-                cropped = self.crop_transparency(frame)
-                resized = self.resize_frame(cropped, TARGET_SIZE)
+                resized = self.resize_frame(frame, is_sticker)
                 processed_frames.append(resized)
 
             # Save frames as PNG sequence
@@ -179,21 +214,21 @@ class WebMConverterApp:
                 frame.save(temp_file, format="PNG")
                 temp_files.append(temp_file)
 
-            # Get duration and adjust
-            total_duration = sum(frame_durations)
+            # Get duration
+            total_duration, frame_durations = self.get_duration(input_path, is_animated)
             frame_count = len(frames)
 
-            # Create WebM from PNG sequence
-            self.create_webm(os.path.join(temp_dir, "frame_%04d.png"), webm_path, total_duration, frame_count)
+            # Create WebM
+            input_pattern = os.path.join(temp_dir, "frame_%04d.png")
+            self.create_webm(input_pattern, webm_path, total_duration, frame_count, is_animated, is_sticker)
 
         except Exception as e:
             self.status_label.config(text="Processing failed")
             messagebox.showerror("Error", f"Processing failed: {e}")
         finally:
-            # Clean up temporary directory
             shutil.rmtree(temp_dir, ignore_errors=True)
 
 if __name__ == "__main__":
     root = tk.Tk()
-    app = WebMConverterApp(root)
+    app = WebMStickerEmojiApp(root)
     root.mainloop()
