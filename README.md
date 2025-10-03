@@ -2,9 +2,9 @@
 
 # V 1.0.0
 
--Supports Sticker making 512 x 512 with dynamic max file size to comply with telegram
+-Supports sticker making 512 x 512 with dynamic max file size to comply with telegram
 
--Supports Static image conversion
+-Supports static image conversion
 
 # About the app
 
