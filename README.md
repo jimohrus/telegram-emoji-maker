@@ -3,6 +3,7 @@
 # V 1.0.0
 
 -Supports Sticker making 512 x 512
+
 -Supports Static image conversion now
 
 # About the app
