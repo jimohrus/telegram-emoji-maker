@@ -1,5 +1,9 @@
 # telegram-emoji-maker
 
+# V 1.0.1
+
+-Allows border cropping before converting
+
 # V 1.0.0
 
 -Supports sticker making 512 x 512 with dynamic max file size to comply with telegram
